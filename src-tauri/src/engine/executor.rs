@@ -167,8 +167,15 @@ fn run_executor(
             });
         }
 
-        // Execute the instruction
-        let next_pc = execute_instruction(&instr, &input, ctx, app, pc)?;
+        // Execute the instruction. On failure, defensively release modifier
+        // keys before propagating the error so nothing is left stuck down.
+        let next_pc = match execute_instruction(&instr, &input, ctx, app, pc) {
+            Ok(n) => n,
+            Err(e) => {
+                input.release_modifiers();
+                return Err(e);
+            }
+        };
 
         // Emit node completion
         if instr.node_id != "__halt__" {
@@ -231,7 +238,9 @@ fn execute_instruction(
             x,
             y,
             relative,
+            input_level,
         } => {
+            ensure_level_supported(input_level)?;
             emit_event(app, ExecutionEvent::Log {
                 level: "info".into(),
                 message: format!("🖱️ Click ({x}, {y})"),
@@ -259,7 +268,9 @@ fn execute_instruction(
             key,
             modifiers,
             hold_ms,
+            input_level,
         } => {
+            ensure_level_supported(input_level)?;
             emit_event(app, ExecutionEvent::Log {
                 level: "info".into(),
                 message: format!("⌨️ Press '{key}'"),
@@ -428,10 +439,48 @@ fn emit_event(app: &AppHandle, event: ExecutionEvent) {
     }
 }
 
+/// Verify that the requested input backend level is available.
+///
+/// Only L1 (standard) is implemented. When a flow requests L2/L3, we fail with
+/// an explicit message rather than silently downgrading to L1 — the user chose
+/// a specific backend and deserves to know it is not running.
+fn ensure_level_supported(level: &InputLevel) -> Result<(), String> {
+    match level {
+        InputLevel::Standard => Ok(()),
+        InputLevel::Interception => Err(
+            "Interception (L2) giriş sürücüsü bu sürümde mevcut değil. \
+             Lütfen ilgili düğümde giriş seviyesini 'standard' olarak seçin."
+                .into(),
+        ),
+        InputLevel::VirtualHid => Err(
+            "Virtual HID (L3) giriş arka ucu bu sürümde mevcut değil. \
+             Lütfen ilgili düğümde giriş seviyesini 'standard' olarak seçin."
+                .into(),
+        ),
+    }
+}
+
 fn truncate_str(s: &str, max: usize) -> String {
     if s.len() > max {
         format!("{}...", &s[..max])
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_level_is_supported() {
+        assert!(ensure_level_supported(&InputLevel::Standard).is_ok());
+    }
+
+    #[test]
+    fn unavailable_levels_return_explicit_error() {
+        // L2/L3 must fail loudly rather than silently downgrading to L1.
+        assert!(ensure_level_supported(&InputLevel::Interception).is_err());
+        assert!(ensure_level_supported(&InputLevel::VirtualHid).is_err());
     }
 }

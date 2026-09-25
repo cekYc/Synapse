@@ -62,6 +62,16 @@ struct EdgeJson {
     source_handle: Option<String>,
 }
 
+/// Parse the `inputLevel` field of a node config into an [`InputLevel`].
+/// Defaults to `Standard` when absent or unrecognized.
+fn parse_input_level(config: &serde_json::Value) -> InputLevel {
+    match config.get("inputLevel").and_then(|v| v.as_str()) {
+        Some("interception") => InputLevel::Interception,
+        Some("virtual_hid") => InputLevel::VirtualHid,
+        _ => InputLevel::Standard,
+    }
+}
+
 /// Compile a flow JSON string into a CompiledFlow IR
 pub fn compile(flow_json: &str) -> Result<CompiledFlow, CompileError> {
     let flow: FlowJson = serde_json::from_str(flow_json)?;
@@ -297,6 +307,7 @@ impl FlowCompiler {
                 x: c.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
                 y: c.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
                 relative: c.get("relative").and_then(|v| v.as_bool()).unwrap_or(false),
+                input_level: parse_input_level(c),
             }),
 
             "mouse_move" => Ok(Opcode::MouseMove {
@@ -340,6 +351,7 @@ impl FlowCompiler {
                         .to_string(),
                     modifiers,
                     hold_ms: c.get("holdMs").and_then(|v| v.as_u64()).unwrap_or(50),
+                    input_level: parse_input_level(c),
                 })
             }
 
@@ -474,6 +486,112 @@ impl FlowCompiler {
             }
 
             _ => Err(CompileError::UnknownNodeKind(kind.to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A trigger wired to a single mouse-click action should compile to
+    /// Nop → MouseClick → Halt with correctly linked `next` pointers.
+    #[test]
+    fn compiles_trigger_action_chain() {
+        let json = r#"{
+            "id": "f1",
+            "name": "Test",
+            "nodes": [
+                {"id": "t", "type": "trigger", "data": {"nodeKind": "hotkey_trigger", "category": "trigger", "config": {"label": "Trig"}}},
+                {"id": "a", "type": "action", "data": {"nodeKind": "mouse_click", "category": "action", "config": {"label": "Click", "x": 100, "y": 200}}}
+            ],
+            "edges": [
+                {"source": "t", "target": "a"}
+            ]
+        }"#;
+
+        let flow = compile(json).expect("compile should succeed");
+        // entry = trigger (Nop), then action, then halt.
+        let entry = &flow.instructions[flow.entry_point];
+        assert!(matches!(entry.opcode, Opcode::Nop));
+
+        let next_idx = entry.next.expect("trigger should link to action");
+        let action = &flow.instructions[next_idx];
+        match &action.opcode {
+            Opcode::MouseClick { x, y, input_level, .. } => {
+                assert_eq!(*x, 100);
+                assert_eq!(*y, 200);
+                assert_eq!(*input_level, InputLevel::Standard);
+            }
+            other => panic!("expected MouseClick, got {other:?}"),
+        }
+
+        // Action links to a terminal Halt.
+        let halt = &flow.instructions[action.next.expect("action links onward")];
+        assert!(matches!(halt.opcode, Opcode::Halt));
+    }
+
+    /// The `inputLevel` config field must round-trip into the IR so the
+    /// executor can reject unavailable backends explicitly.
+    #[test]
+    fn parses_input_level_selection() {
+        let json = r#"{
+            "id": "f2",
+            "name": "Levels",
+            "nodes": [
+                {"id": "a", "type": "action", "data": {"nodeKind": "mouse_click", "category": "action", "config": {"label": "Click", "inputLevel": "interception"}}}
+            ],
+            "edges": []
+        }"#;
+
+        let flow = compile(json).expect("compile should succeed");
+        let has_interception = flow.instructions.iter().any(|i| {
+            matches!(
+                &i.opcode,
+                Opcode::MouseClick { input_level: InputLevel::Interception, .. }
+            )
+        });
+        assert!(has_interception, "inputLevel=interception must reach the IR");
+    }
+
+    /// An empty graph should still yield a valid single-Halt program.
+    #[test]
+    fn empty_flow_compiles_to_halt() {
+        let json = r#"{"id": "e", "name": "Empty", "nodes": [], "edges": []}"#;
+        let flow = compile(json).expect("empty flow compiles");
+        assert_eq!(flow.instructions.len(), 1);
+        assert!(matches!(flow.instructions[0].opcode, Opcode::Halt));
+    }
+
+    /// Condition nodes emit a Branch whose else-target follows "output-1".
+    #[test]
+    fn branch_else_target_wired_from_secondary_handle() {
+        let json = r#"{
+            "id": "f3",
+            "name": "Branch",
+            "nodes": [
+                {"id": "c", "type": "condition", "data": {"nodeKind": "if_else", "category": "condition", "config": {"label": "If", "leftOperand": "1", "operator": "==", "rightOperand": "1"}}},
+                {"id": "yes", "type": "action", "data": {"nodeKind": "delay", "category": "action", "config": {"label": "Yes"}}},
+                {"id": "no", "type": "action", "data": {"nodeKind": "delay", "category": "action", "config": {"label": "No"}}}
+            ],
+            "edges": [
+                {"source": "c", "target": "yes", "sourceHandle": "output-0"},
+                {"source": "c", "target": "no", "sourceHandle": "output-1"}
+            ]
+        }"#;
+
+        let flow = compile(json).expect("compile should succeed");
+        let branch = flow
+            .instructions
+            .iter()
+            .find(|i| matches!(i.opcode, Opcode::Branch { .. }))
+            .expect("a Branch opcode should exist");
+
+        match &branch.opcode {
+            Opcode::Branch { else_target, .. } => {
+                assert!(else_target.is_some(), "else_target must be wired from output-1");
+            }
+            _ => unreachable!(),
         }
     }
 }

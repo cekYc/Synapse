@@ -28,7 +28,7 @@ export function PropertiesPanel() {
   }
 
   const entry = getNodeEntry(selectedNode.data.nodeKind);
-  const config = selectedNode.data.config as Record<string, unknown>;
+  const config = selectedNode.data.config as unknown as Record<string, unknown>;
 
   const handleChange = (key: string, value: string | number | boolean) => {
     updateNodeConfig(selectedNode.id, { [key]: value } as any);

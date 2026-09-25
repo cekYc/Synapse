@@ -7,6 +7,8 @@
 // strongly-typed `config` payload that maps 1:1 to IR opcodes.
 // ============================================================
 
+import type { Node } from '@xyflow/react';
+
 export type NodeCategory = 'trigger' | 'action' | 'condition' | 'loop';
 
 /** Base configuration shared by all node types */
@@ -159,9 +161,17 @@ export type NodeKind =
   | 'loop'
   | 'while_loop';
 
-/** Custom data payload attached to every React Flow node */
-export interface SynapseNodeData {
+/**
+ * Custom data payload attached to every React Flow node.
+ *
+ * Extends `Record<string, unknown>` to satisfy @xyflow/react v12's `Node<T>`
+ * data constraint (`T extends Record<string, unknown>`).
+ */
+export interface SynapseNodeData extends Record<string, unknown> {
   nodeKind: NodeKind;
   category: NodeCategory;
   config: NodeConfig;
 }
+
+/** A React Flow node specialized with Synapse's data payload. */
+export type SynapseNode = Node<SynapseNodeData>;

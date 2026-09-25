@@ -48,6 +48,8 @@ pub enum Opcode {
         x: i32,
         y: i32,
         relative: bool,
+        #[serde(default)]
+        input_level: InputLevel,
     },
     MouseMove {
         x: i32,
@@ -60,6 +62,8 @@ pub enum Opcode {
         key: String,
         modifiers: Vec<KeyModifier>,
         hold_ms: u64,
+        #[serde(default)]
+        input_level: InputLevel,
     },
     TypeText {
         text: String,
@@ -106,6 +110,29 @@ pub enum Opcode {
     Nop,
     /// End of flow
     Halt,
+}
+
+/// Which input backend an action requests.
+///
+/// The visual editor lets users pick an input "level" per action. Only the
+/// standard backend (L1: enigo/SendInput) is currently implemented. The higher
+/// levels are declared here so flows can carry the selection round-trip, and so
+/// the executor can report a clear, explicit error instead of silently running
+/// on L1 when an unavailable backend is requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputLevel {
+    /// L1 — standard OS-level input injection (enigo / SendInput).
+    Standard,
+    /// L2 — Interception kernel driver. Not implemented.
+    Interception,
+    /// L3 — virtual HID device. Not implemented.
+    VirtualHid,
+}
+
+impl Default for InputLevel {
+    fn default() -> Self {
+        InputLevel::Standard
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

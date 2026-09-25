@@ -108,7 +108,7 @@ export default function App() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          onInit={(instance) => { reactFlowInstance.current = instance; }}
+          onInit={(instance) => { reactFlowInstance.current = instance as unknown as ReactFlowInstance; }}
           onDrop={onDrop}
           onDragOver={onDragOver}
           onNodeClick={onNodeClick}

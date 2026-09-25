@@ -35,4 +35,11 @@ pub trait InputBackend: Send + Sync {
         delay_per_char_ms: u64,
         humanized: bool,
     ) -> Result<(), String>;
+
+    /// Defensively release all modifier keys (Ctrl/Alt/Shift/Win).
+    ///
+    /// Called by the executor when a flow ends in an error, as a safety net so
+    /// a modifier that was left pressed by an interrupted operation does not
+    /// stay stuck down after execution stops.
+    fn release_modifiers(&self);
 }
