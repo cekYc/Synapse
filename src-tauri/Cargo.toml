@@ -29,9 +29,30 @@ enigo = { version = "0.3", features = [] }
 rand = "0.9"
 parking_lot = "0.12"
 
+# Phase 5: Performance (GPU template matching, parallel CPU fallback)
+# NOTE: wgpu-hal's DX12 backend needs `gpu-allocator` built against `windows`
+# 0.62, but gpu-allocator accepts a range (>=0.53, <=0.62) and, with Tauri's
+# 0.58/0.61 also in the graph, Cargo may resolve it to an older one. Cargo.lock
+# pins that edge to 0.62.2. If the Windows build fails inside wgpu-hal/dx12
+# after a `cargo update`, set gpu-allocator's `windows` entry in Cargo.lock back
+# to "windows 0.62.2".
+wgpu ={ version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "vulkan", "metal"] }
+pollster = "1"
+bytemuck = { version = "1", features = ["derive"] }
+rayon = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
+] }
+# Phase 5: DXGI Desktop Duplication (COM interfaces need the `windows` crate)
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
 ] }

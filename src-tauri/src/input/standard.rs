@@ -50,7 +50,7 @@ impl InputBackend for StandardInput {
         // Resolve the destination. For relative clicks the coordinates are an
         // offset from the current cursor position rather than absolute screen
         // coordinates.
-        let (tx, ty) = resolve_target(&*enigo, x, y, relative)?;
+        let (tx, ty) = resolve_target(&enigo, x, y, relative)?;
 
         // Move to position first
         enigo
@@ -76,8 +76,6 @@ impl InputBackend for StandardInput {
                     .map_err(|e| format!("Click failed: {e}"))?;
             }
             ClickType::Hold => {
-                // Guarantee the button is released even if the hold sequence is
-                // interrupted by an error, so we never leave a button stuck down.
                 enigo
                     .button(btn, Direction::Press)
                     .map_err(|e| format!("Press failed: {e}"))?;
@@ -103,7 +101,7 @@ impl InputBackend for StandardInput {
         let mut enigo = self.enigo.lock().map_err(|e| e.to_string())?;
 
         // Resolve the destination in absolute screen coordinates.
-        let (target_x, target_y) = resolve_target(&*enigo, x, y, relative)?;
+        let (target_x, target_y) = resolve_target(&enigo, x, y, relative)?;
 
         if duration_ms == 0 {
             enigo

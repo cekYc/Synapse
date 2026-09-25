@@ -1,13 +1,19 @@
 // ============================================================
-// Synapse — Screen Capture (GDI BitBlt)
+// Synapse — Screen Capture
 // ============================================================
-// Fast screen capture using Windows GDI. This is the primary
-// capture backend for pixel analysis and template matching.
+// Two Windows backends:
 //
-// Flow: GetDC(desktop) → CreateCompatibleDC → BitBlt → GetDIBits
+// - DXGI Desktop Duplication (preferred): GPU-side copy of the
+//   requested region of the primary monitor — see `dxgi.rs`.
+// - GDI BitBlt (fallback): GetDC(desktop) → CreateCompatibleDC →
+//   BitBlt → GetDIBits. Works anywhere on the virtual desktop.
 //
-// Future: DXGI Desktop Duplication for GPU-accelerated capture
+// `capture_screen` tries DXGI first and silently falls back to GDI
+// when DXGI is unavailable, the region is not on the primary
+// monitor, or a capture fails. Set SYNAPSE_CAPTURE=gdi to force GDI.
 // ============================================================
+
+use serde::Serialize;
 
 /// Raw screen buffer in BGRA format
 #[derive(Debug, Clone)]
@@ -40,9 +46,128 @@ impl ScreenBuffer {
     }
 }
 
-/// Capture a region of the screen (or full screen if region is None)
+/// Screen capture backend in use
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)] // which variants are constructed depends on the platform
+pub enum CaptureBackend {
+    Dxgi,
+    Gdi,
+    /// Screen capture is only implemented on Windows
+    Unsupported,
+}
+
+/// Capture a region of the screen (or the primary monitor if region is None)
 #[cfg(target_os = "windows")]
 pub fn capture_screen(region: Option<(i32, i32, u32, u32)>) -> Result<ScreenBuffer, String> {
+    if let Some(buffer) = dxgi_backend::capture(region) {
+        return Ok(buffer);
+    }
+    capture_gdi(region)
+}
+
+/// The backend serving captures right now, with the GPU adapter name for
+/// DXGI. Initializes DXGI on first call, so this may take a moment.
+pub fn backend_info() -> (CaptureBackend, Option<String>) {
+    #[cfg(target_os = "windows")]
+    {
+        match dxgi_backend::status() {
+            Some(adapter) => (CaptureBackend::Dxgi, Some(adapter)),
+            None => (CaptureBackend::Gdi, None),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        (CaptureBackend::Unsupported, None)
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod dxgi_backend {
+    use super::super::dxgi::{DxgiCapturer, DxgiError};
+    use super::ScreenBuffer;
+    use parking_lot::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// After DXGI fails, use GDI for this long before trying DXGI again
+    /// (e.g. while the secure desktop / UAC prompt is shown)
+    const RETRY_AFTER: Duration = Duration::from_secs(5);
+
+    struct State {
+        capturer: Option<DxgiCapturer>,
+        last_failure: Option<Instant>,
+    }
+
+    static STATE: Mutex<State> = Mutex::new(State {
+        capturer: None,
+        last_failure: None,
+    });
+
+    fn disabled() -> bool {
+        std::env::var("SYNAPSE_CAPTURE").is_ok_and(|v| v.eq_ignore_ascii_case("gdi"))
+    }
+
+    /// Capture through DXGI; `None` means this capture should use GDI
+    pub fn capture(region: Option<(i32, i32, u32, u32)>) -> Option<ScreenBuffer> {
+        if disabled() {
+            return None;
+        }
+        let mut state = STATE.lock();
+        // A lost duplication is recreated and retried once
+        for _ in 0..2 {
+            let capturer = ensure(&mut state)?;
+            match capturer.capture(region) {
+                Ok(buffer) => return Some(buffer),
+                Err(DxgiError::OutsideOutput) => return None,
+                Err(DxgiError::AccessLost) => {
+                    tracing::debug!("DXGI access lost, recreating duplication");
+                    state.capturer = None;
+                }
+                Err(e) => {
+                    tracing::warn!("DXGI capture failed, falling back to GDI: {e}");
+                    state.capturer = None;
+                    state.last_failure = Some(Instant::now());
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    /// Adapter name when DXGI capture is available
+    pub fn status() -> Option<String> {
+        if disabled() {
+            return None;
+        }
+        let mut state = STATE.lock();
+        ensure(&mut state).map(|c| c.adapter_name().to_string())
+    }
+
+    fn ensure(state: &mut State) -> Option<&mut DxgiCapturer> {
+        if state.capturer.is_none() {
+            if state.last_failure.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
+                return None;
+            }
+            match DxgiCapturer::new() {
+                Ok(capturer) => {
+                    tracing::info!("DXGI desktop duplication ready on {}", capturer.adapter_name());
+                    state.capturer = Some(capturer);
+                    state.last_failure = None;
+                }
+                Err(e) => {
+                    tracing::warn!("DXGI desktop duplication unavailable, using GDI: {e}");
+                    state.last_failure = Some(Instant::now());
+                    return None;
+                }
+            }
+        }
+        state.capturer.as_mut()
+    }
+}
+
+/// GDI capture of a region of the virtual desktop (primary monitor if None)
+#[cfg(target_os = "windows")]
+fn capture_gdi(region: Option<(i32, i32, u32, u32)>) -> Result<ScreenBuffer, String> {
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -60,6 +185,10 @@ pub fn capture_screen(region: Option<(i32, i32, u32, u32)>) -> Result<ScreenBuff
                 (0, 0, w, h)
             }
         };
+        if cap_w == 0 || cap_h == 0 {
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            return Err("Capture region is empty".into());
+        }
 
         let hdc_mem = CreateCompatibleDC(hdc_screen);
         if hdc_mem.is_null() {

@@ -169,7 +169,7 @@ fn run_executor(
 
         // Execute the instruction. On failure, defensively release modifier
         // keys before propagating the error so nothing is left stuck down.
-        let next_pc = match execute_instruction(&instr, &input, ctx, app, pc) {
+        let next_pc = match execute_instruction(instr, &input, ctx, app, pc) {
             Ok(n) => n,
             Err(e) => {
                 input.release_modifiers();

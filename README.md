@@ -55,9 +55,12 @@ Hiç programlama bilmeyen biri bile, **sürükle-bırak** mantığıyla bilgisay
 - **Katmanlı mimari**: L1 (SendInput) → L2 (Interception) → L3 (Virtual HID) [roadmap]
 
 ### 👁️ Görüntü İşleme
-- **GDI BitBlt** ile hızlı ekran yakalama
+- **DXGI Desktop Duplication** ile GPU tarafında ekran yakalama (birincil monitör); gerektiğinde otomatik **GDI BitBlt** yedeği
 - **Piksel renk analizi**: Toleranslı renk eşleme ve arama
 - **Template matching**: Normalized Cross-Correlation (NCC) ile görsel arama
+  - Büyük aramalar **wgpu compute shader** ile GPU'da (DX12 / Vulkan)
+  - GPU yoksa veya arama küçükse **çok çekirdekli CPU** eşleyicisi (rayon)
+  - İki yol da aynı konumu ve güven skorunu döndürür
 - **BMP desteği**: 24-bit ve 32-bit template yükleme
 
 ### 💾 Akış Yönetimi
@@ -79,7 +82,7 @@ Hiç programlama bilmeyen biri bile, **sürükle-bırak** mantığıyla bilgisay
 │                     Rust Backend                         │
 │  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌───────────┐  │
 │  │ Compiler │ │ Executor │ │   Input   │ │  Vision   │  │
-│  │(JSON→IR) │ │(IR→Run)  │ │(enigo/L1) │ │(GDI/NCC)  │  │
+│  │(JSON→IR) │ │(IR→Run)  │ │(enigo/L1) │ │(DXGI/GPU) │  │
 │  └──────────┘ └──────────┘ └───────────┘ └───────────┘  │
 │              Storage (fs) │ Context (vars/loops)         │
 └─────────────────────────────────────────────────────────┘
@@ -144,15 +147,39 @@ synapse/
 │       │   ├── mod.rs            # InputBackend trait
 │       │   └── standard.rs       # L1: enigo/SendInput backend
 │       ├── vision/               # Görüntü işleme
-│       │   ├── capture.rs        # GDI BitBlt ekran yakalama
+│       │   ├── capture.rs        # Yakalama (DXGI → GDI yedeği)
+│       │   ├── dxgi.rs           # DXGI Desktop Duplication
 │       │   ├── pixel.rs          # Piksel renk analizi
-│       │   └── template.rs       # NCC template matching
+│       │   ├── template.rs       # Template matching (GPU/CPU seçimi)
+│       │   ├── ncc.rs            # Paralel CPU NCC eşleyicisi
+│       │   ├── gpu.rs            # wgpu GPU eşleyicisi
+│       │   └── ncc.wgsl          # NCC compute shader
 │       ├── commands/             # Tauri IPC komutları
 │       ├── storage/              # Dosya sistemi depolama
 │       └── lib.rs                # Modül kökü
 │
 ├── docs/                         # Dokümantasyon ve görseller
 └── package.json
+```
+
+### Ortam Değişkenleri (sorun giderme)
+
+| Değişken | Değerler | Açıklama |
+|----------|----------|----------|
+| `SYNAPSE_CAPTURE` | `gdi` | DXGI yerine her zaman GDI ile yakala |
+| `SYNAPSE_MATCHER` | `auto` (varsayılan), `gpu`, `cpu` | `auto` yalnızca büyük aramalarda GPU kullanır |
+| `SYNAPSE_GPU_ALLOW_SOFTWARE` | `1` | Yazılımsal GPU adaptörlerine (WARP, llvmpipe) izin ver |
+| `WGPU_BACKEND` | `dx12`, `vulkan` | wgpu arka ucunu zorla |
+
+Etkin yakalama ve eşleme arka uçları durum çubuğunda gösterilir.
+
+### Testler
+
+```bash
+cd src-tauri
+cargo test --lib                          # GPU yoksa GPU testleri atlanır
+SYNAPSE_REQUIRE_GPU=1 cargo test --lib    # GPU testlerini zorunlu kıl
+cargo test --release --lib -- --ignored --nocapture bench   # Performans ölçümleri
 ```
 
 ## 🧩 Düğüm Tipleri
@@ -182,7 +209,7 @@ synapse/
 - [x] **Faz 2**: Çekirdek Motor — IR, derleyici, executor, giriş simülasyonu
 - [x] **Faz 3**: Görüntü İşleme — Ekran yakalama, piksel analizi, template matching
 - [ ] **Faz 4**: Gelişmiş Giriş — Interception driver (L2), anti-detection
-- [ ] **Faz 5**: Performans — DXGI Desktop Duplication, wgpu compute shader
+- [x] **Faz 5**: Performans — DXGI Desktop Duplication, wgpu compute shader
 - [ ] **Faz 6**: Eklenti Sistemi — Lua/JS scripting desteği
 - [ ] **Faz 7**: Topluluk — Flow paylaşım platformu
 

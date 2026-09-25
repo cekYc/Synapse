@@ -47,6 +47,7 @@ pub fn run() {
             commands::vision::get_pixel,
             commands::vision::find_pixel,
             commands::vision::find_image,
+            commands::vision::get_vision_backends,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Synapse");

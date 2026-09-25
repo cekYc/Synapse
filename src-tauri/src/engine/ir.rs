@@ -119,20 +119,15 @@ pub enum Opcode {
 /// levels are declared here so flows can carry the selection round-trip, and so
 /// the executor can report a clear, explicit error instead of silently running
 /// on L1 when an unavailable backend is requested.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum InputLevel {
     /// L1 — standard OS-level input injection (enigo / SendInput).
+    #[default]
     Standard,
     /// L2 — Interception kernel driver. Not implemented.
     Interception,
     /// L3 — virtual HID device. Not implemented.
     VirtualHid,
-}
-
-impl Default for InputLevel {
-    fn default() -> Self {
-        InputLevel::Standard
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
