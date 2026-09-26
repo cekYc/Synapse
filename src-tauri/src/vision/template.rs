@@ -20,15 +20,65 @@ use std::path::Path;
 #[allow(dead_code)]
 pub struct MatchResult {
     /// Top-left X of the best match (screen coordinates)
-    pub x: u32,
+    pub x: i32,
     /// Top-left Y of the best match (screen coordinates)
-    pub y: u32,
+    pub y: i32,
     /// Center X of the match
-    pub center_x: u32,
+    pub center_x: i32,
     /// Center Y of the match
-    pub center_y: u32,
+    pub center_y: i32,
     /// Confidence score (0.0 to 1.0)
     pub confidence: f64,
+}
+
+/// A template image loaded and preprocessed once, so repeated searches
+/// (e.g. a trigger polling the screen) skip file I/O and preparation
+pub struct Template {
+    prepared: ncc::PreparedTemplate,
+}
+
+impl Template {
+    /// Load a BMP template; fails if the file is missing, invalid or blank
+    pub fn load(path: &str) -> Result<Self, String> {
+        let buffer = load_image_as_buffer(path)?;
+        Ok(Self {
+            prepared: ncc::PreparedTemplate::new(&buffer)?,
+        })
+    }
+
+    /// Search a screen region (primary monitor if `None`) for the template
+    pub fn find(
+        &self,
+        min_confidence: f64,
+        region: Option<(i32, i32, u32, u32)>,
+    ) -> Result<Option<MatchResult>, String> {
+        let screen = capture_screen(region)?;
+
+        let Some(best) = match_prepared(&screen, &self.prepared)? else {
+            return Ok(None); // Template larger than search area
+        };
+
+        if best.score < min_confidence {
+            tracing::debug!(
+                "Template match best score {:.3} below threshold {:.3}",
+                best.score,
+                min_confidence
+            );
+            return Ok(None);
+        }
+
+        // Region origins may be negative on multi-monitor setups
+        let (origin_x, origin_y) = region.map(|(x, y, _, _)| (x, y)).unwrap_or((0, 0));
+        let x = origin_x + best.x as i32;
+        let y = origin_y + best.y as i32;
+        Ok(Some(MatchResult {
+            x,
+            y,
+            center_x: x + (self.prepared.width / 2) as i32,
+            center_y: y + (self.prepared.height / 2) as i32,
+            confidence: best.score,
+        }))
+    }
 }
 
 /// Search the screen for a template image
@@ -37,64 +87,30 @@ pub fn find_template(
     min_confidence: f64,
     region: Option<(i32, i32, u32, u32)>,
 ) -> Result<Option<MatchResult>, String> {
-    // Load the template image
-    let template = load_image_as_buffer(template_path)?;
-
-    // Capture the screen region
-    let screen = capture_screen(region)?;
-
-    let Some(best) = match_template(&screen, &template)? else {
-        return Ok(None); // Template larger than search area
-    };
-
-    if best.score >= min_confidence {
-        let (offset_x, offset_y) = match region {
-            Some((rx, ry, _, _)) => (rx as u32, ry as u32),
-            None => (0, 0),
-        };
-
-        Ok(Some(MatchResult {
-            x: best.x + offset_x,
-            y: best.y + offset_y,
-            center_x: best.x + offset_x + template.width / 2,
-            center_y: best.y + offset_y + template.height / 2,
-            confidence: best.score,
-        }))
-    } else {
-        tracing::debug!(
-            "Template match best score {:.3} below threshold {:.3}",
-            best.score,
-            min_confidence
-        );
-        Ok(None)
-    }
+    Template::load(template_path)?.find(min_confidence, region)
 }
 
-/// Best NCC match of `template` inside `screen` (buffer coordinates).
-/// `Ok(None)` if the template does not fit; `Err` if it is blank.
-pub fn match_template(
+/// Best NCC match of a prepared template inside `screen` (buffer
+/// coordinates), or `None` if the template does not fit
+fn match_prepared(
     screen: &ScreenBuffer,
-    template: &ScreenBuffer,
+    prepared: &ncc::PreparedTemplate,
 ) -> Result<Option<ncc::NccMatch>, String> {
-    if template.width > screen.width || template.height > screen.height {
-        return Ok(None);
-    }
-    let prepared = ncc::PreparedTemplate::new(template)?;
-    let Some((search_w, search_h)) = ncc::search_dims(screen, &prepared) else {
+    let Some((search_w, search_h)) = ncc::search_dims(screen, prepared) else {
         return Ok(None);
     };
 
     let work = search_w as u64 * search_h as u64 * prepared.pixel_count() as u64;
     if gpu::should_use(work) {
         if let Some(matcher) = gpu::global() {
-            match matcher.find_best(screen, &prepared) {
+            match matcher.find_best(screen, prepared) {
                 Ok(result) => return Ok(result),
                 Err(e) => tracing::warn!("GPU template matching failed, using CPU: {e}"),
             }
         }
     }
 
-    Ok(ncc::find_best_cpu(screen, &prepared))
+    Ok(ncc::find_best_cpu(screen, prepared))
 }
 
 /// Load a BMP/raw image file as a ScreenBuffer

@@ -23,18 +23,31 @@ export interface HotkeyTriggerConfig extends BaseNodeConfig {
   keys: string[];
 }
 
-export interface PixelColorTriggerConfig extends BaseNodeConfig {
+/**
+ * Screen search region. A width or height of 0 means "no region":
+ * the whole screen (images) or just the (x, y) pixel (pixel trigger).
+ */
+export interface RegionFields {
+  regionX: number;
+  regionY: number;
+  regionW: number;
+  regionH: number;
+}
+
+/** Waits until the pixel at (x, y) — or any pixel in the region — matches */
+export interface PixelColorTriggerConfig extends BaseNodeConfig, RegionFields {
   x: number;
   y: number;
   color: string; // hex
-  tolerance: number;
-  region?: { x: number; y: number; w: number; h: number };
+  tolerance: number; // summed RGB distance, 0–765
+  pollIntervalMs: number;
 }
 
-export interface ImageMatchTriggerConfig extends BaseNodeConfig {
-  templatePath: string;
+/** Waits until the template image appears on screen */
+export interface ImageMatchTriggerConfig extends BaseNodeConfig, RegionFields {
+  templatePath: string; // 24/32-bit BMP
   confidence: number; // 0-1
-  region?: { x: number; y: number; w: number; h: number };
+  pollIntervalMs: number;
 }
 
 export interface TimerTriggerConfig extends BaseNodeConfig {
@@ -104,10 +117,9 @@ export interface PixelCheckConfig extends BaseNodeConfig {
   tolerance: number;
 }
 
-export interface ImageExistsConfig extends BaseNodeConfig {
-  templatePath: string;
-  confidence: number;
-  region?: { x: number; y: number; w: number; h: number };
+export interface ImageExistsConfig extends BaseNodeConfig, RegionFields {
+  templatePath: string; // 24/32-bit BMP
+  confidence: number; // 0-1
 }
 
 // --- Loop Configs ---

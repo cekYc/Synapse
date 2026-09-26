@@ -32,6 +32,19 @@ function NodeField({ label, value }: NodeFieldProps) {
   );
 }
 
+/** File name of a template path, for compact display on the node */
+function templateName(path: unknown): string {
+  const name = typeof path === 'string' ? path.split(/[\\/]/).pop() : '';
+  return name || '(seçilmedi)';
+}
+
+/** "W×H @ (x, y)" when a search region is set, otherwise null */
+function regionText(config: any): string | null {
+  return config.regionW > 0 && config.regionH > 0
+    ? `${config.regionW}×${config.regionH} @ (${config.regionX}, ${config.regionY})`
+    : null;
+}
+
 function getNodeFields(data: SynapseNodeData): { label: string; value: string | number }[] {
   const config = data.config;
   const kind = data.nodeKind;
@@ -39,14 +52,21 @@ function getNodeFields(data: SynapseNodeData): { label: string; value: string | 
   switch (kind) {
     case 'hotkey_trigger':
       return [{ label: 'Tuşlar', value: (config as any).keys?.join(' + ') || '—' }];
-    case 'pixel_color_trigger':
+    case 'pixel_color_trigger': {
+      const region = regionText(config);
       return [
-        { label: 'Konum', value: `(${(config as any).x}, ${(config as any).y})` },
+        region
+          ? { label: 'Bölge', value: region }
+          : { label: 'Konum', value: `(${(config as any).x}, ${(config as any).y})` },
         { label: 'Renk', value: (config as any).color || '#000' },
       ];
+    }
     case 'image_match_trigger':
+    case 'image_exists':
       return [
+        { label: 'Şablon', value: templateName((config as any).templatePath) },
         { label: 'Güven', value: `${((config as any).confidence * 100).toFixed(0)}%` },
+        ...(regionText(config) ? [{ label: 'Bölge', value: regionText(config)! }] : []),
       ];
     case 'timer_trigger':
       return [{ label: 'Aralık', value: `${(config as any).intervalMs}ms` }];
@@ -95,8 +115,6 @@ function getNodeFields(data: SynapseNodeData): { label: string; value: string | 
         { label: 'Konum', value: `(${(config as any).x}, ${(config as any).y})` },
         { label: 'Renk', value: (config as any).expectedColor },
       ];
-    case 'image_exists':
-      return [{ label: 'Güven', value: `${((config as any).confidence * 100).toFixed(0)}%` }];
     case 'loop':
       return [{ label: 'Tekrar', value: (config as any).count === 0 ? '∞' : (config as any).count }];
     case 'while_loop':

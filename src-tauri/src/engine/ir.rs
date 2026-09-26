@@ -85,6 +85,19 @@ pub enum Opcode {
         value_type: VarType,
     },
 
+    // ─── Vision ──────────────────────────────────────
+    /// Branch on a screen check: if it holds → next, otherwise → else_target
+    VisionBranch {
+        check: VisionCheck,
+        else_target: Option<usize>,
+    },
+    /// Block until a screen check holds (pixel/image triggers), polling
+    /// every `poll_interval_ms`; honors pause and stop while waiting
+    WaitForVision {
+        check: VisionCheck,
+        poll_interval_ms: u64,
+    },
+
     // ─── Flow Control ────────────────────────────────
     /// Conditional branch: if true → next, if false → else_target
     Branch {
@@ -110,6 +123,46 @@ pub enum Opcode {
     Nop,
     /// End of flow
     Halt,
+}
+
+/// A condition evaluated against the screen
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum VisionCheck {
+    /// The pixel at (x, y) is within `tolerance` of `color`
+    Pixel {
+        x: i32,
+        y: i32,
+        color: String,
+        tolerance: u32,
+    },
+    /// Some pixel inside `region` is within `tolerance` of `color`
+    ColorInRegion {
+        region: Region,
+        color: String,
+        tolerance: u32,
+    },
+    /// The template image is found with at least `confidence`
+    Image {
+        template_path: String,
+        confidence: f64,
+        region: Option<Region>,
+    },
+}
+
+/// A screen rectangle in virtual-desktop coordinates
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Region {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Region {
+    pub fn as_tuple(&self) -> (i32, i32, u32, u32) {
+        (self.x, self.y, self.w, self.h)
+    }
 }
 
 /// Which input backend an action requests.

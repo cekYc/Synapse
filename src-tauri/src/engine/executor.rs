@@ -14,6 +14,7 @@
 
 use crate::engine::context::ExecutionContext;
 use crate::engine::ir::*;
+use crate::engine::vision_check::{self, PreparedCheck, VisionHit};
 use crate::input::standard::StandardInput;
 use crate::input::InputBackend;
 use rand::Rng;
@@ -71,6 +72,10 @@ pub enum ExecutionEvent {
 }
 
 const EVENT_NAME: &str = "synapse://execution";
+
+/// A screen trigger gives up after this many consecutive capture failures
+/// (at the default 100 ms poll: about two seconds of failing captures)
+const MAX_POLL_FAILURES: u32 = 20;
 
 /// Start executing a compiled flow on a dedicated thread
 pub fn execute_flow(
@@ -309,25 +314,11 @@ fn execute_instruction(
                 message: format!("⏱️ Wait {actual_ms}ms"),
             });
 
-            // Sleep in small chunks so we can check for cancellation
-            let chunk = 50u64;
-            let mut remaining = actual_ms;
-            while remaining > 0 {
-                if ctx.is_cancelled() {
-                    return Ok(NextPc::Halt);
-                }
-                while ctx.is_paused() {
-                    if ctx.is_cancelled() {
-                        return Ok(NextPc::Halt);
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-                let sleep_ms = remaining.min(chunk);
-                thread::sleep(Duration::from_millis(sleep_ms));
-                remaining = remaining.saturating_sub(sleep_ms);
+            if sleep_cancellable(ctx, actual_ms) {
+                Ok(NextPc::Continue)
+            } else {
+                Ok(NextPc::Halt)
             }
-
-            Ok(NextPc::Continue)
         }
 
         Opcode::RunProgram {
@@ -373,6 +364,74 @@ fn execute_instruction(
                 message: format!("📝 {name} = '{value}'"),
             });
             Ok(NextPc::Continue)
+        }
+
+        // ─── Vision ──────────────────────────────────
+
+        Opcode::VisionBranch { check, else_target } => {
+            let hit = PreparedCheck::new(check)?.evaluate()?;
+            emit_event(app, ExecutionEvent::Log {
+                level: "info".into(),
+                message: format!(
+                    "👁️ {}: {}",
+                    vision_check::describe(check),
+                    if hit.is_some() { "found" } else { "not found" }
+                ),
+            });
+
+            match (hit, else_target) {
+                (Some(hit), _) => {
+                    record_hit(app, ctx, &hit);
+                    Ok(NextPc::Continue)
+                }
+                (None, Some(target)) => Ok(NextPc::Jump(*target)),
+                (None, None) => Ok(NextPc::Continue),
+            }
+        }
+
+        Opcode::WaitForVision {
+            check,
+            poll_interval_ms,
+        } => {
+            // Configuration errors (bad color, missing template) fail at once
+            let prepared = PreparedCheck::new(check)?;
+            emit_event(app, ExecutionEvent::Log {
+                level: "info".into(),
+                message: format!("👁️ Waiting for {}", vision_check::describe(check)),
+            });
+
+            let mut failures = 0u32;
+            loop {
+                match prepared.evaluate() {
+                    Ok(Some(hit)) => {
+                        emit_event(app, ExecutionEvent::Log {
+                            level: "info".into(),
+                            message: format!("👁️ Triggered at ({}, {})", hit.x, hit.y),
+                        });
+                        record_hit(app, ctx, &hit);
+                        return Ok(NextPc::Continue);
+                    }
+                    Ok(None) => failures = 0,
+                    // Capture can fail transiently (e.g. while a UAC prompt
+                    // owns the screen); only give up if it keeps failing
+                    Err(e) => {
+                        failures += 1;
+                        if failures == 1 {
+                            emit_event(app, ExecutionEvent::Log {
+                                level: "warn".into(),
+                                message: format!("Screen capture failed, retrying: {e}"),
+                            });
+                        }
+                        if failures >= MAX_POLL_FAILURES {
+                            return Err(e);
+                        }
+                    }
+                }
+
+                if !sleep_cancellable(ctx, *poll_interval_ms) {
+                    return Ok(NextPc::Halt);
+                }
+            }
         }
 
         // ─── Flow Control ────────────────────────────
@@ -439,6 +498,46 @@ fn emit_event(app: &AppHandle, event: ExecutionEvent) {
     }
 }
 
+/// Sleep for `ms`, waiting out pauses. Returns `false` if the flow was
+/// stopped, in which case the caller should halt.
+fn sleep_cancellable(ctx: &ExecutionContext, ms: u64) -> bool {
+    const CHUNK_MS: u64 = 50;
+    let mut remaining = ms;
+    loop {
+        if ctx.is_cancelled() {
+            return false;
+        }
+        while ctx.is_paused() {
+            if ctx.is_cancelled() {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(CHUNK_MS));
+        }
+        if remaining == 0 {
+            return true;
+        }
+        let step = remaining.min(CHUNK_MS);
+        thread::sleep(Duration::from_millis(step));
+        remaining -= step;
+    }
+}
+
+/// Expose where a vision check matched as flow variables
+/// (`match_x`, `match_y` and, for images, `match_confidence`)
+fn record_hit(app: &AppHandle, ctx: &ExecutionContext, hit: &VisionHit) {
+    let mut vars = vec![("match_x", hit.x.to_string()), ("match_y", hit.y.to_string())];
+    if let Some(confidence) = hit.confidence {
+        vars.push(("match_confidence", format!("{confidence:.3}")));
+    }
+    for (name, value) in vars {
+        ctx.set_variable(name, &value);
+        emit_event(app, ExecutionEvent::VariableChanged {
+            name: name.into(),
+            value,
+        });
+    }
+}
+
 /// Verify that the requested input backend level is available.
 ///
 /// Only L1 (standard) is implemented. When a flow requests L2/L3, we fail with
@@ -482,5 +581,45 @@ mod tests {
         // L2/L3 must fail loudly rather than silently downgrading to L1.
         assert!(ensure_level_supported(&InputLevel::Interception).is_err());
         assert!(ensure_level_supported(&InputLevel::VirtualHid).is_err());
+    }
+
+    #[test]
+    fn sleep_returns_false_once_stopped() {
+        let ctx = ExecutionContext::new();
+        ctx.cancel();
+        let start = std::time::Instant::now();
+        assert!(!sleep_cancellable(&ctx, 10_000));
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn sleep_waits_out_pauses_and_stops_early() {
+        let ctx = ExecutionContext::new();
+        let start = std::time::Instant::now();
+        assert!(sleep_cancellable(&ctx, 60));
+        assert!(start.elapsed() >= Duration::from_millis(60));
+
+        // Paused: the sleep outlasts its duration until resumed
+        ctx.pause();
+        let remote = ctx.clone();
+        let resumer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            remote.resume();
+        });
+        let start = std::time::Instant::now();
+        assert!(sleep_cancellable(&ctx, 10));
+        assert!(start.elapsed() >= Duration::from_millis(200));
+        resumer.join().unwrap();
+
+        // Stopped mid-sleep: returns promptly with false
+        let remote = ctx.clone();
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            remote.cancel();
+        });
+        let start = std::time::Instant::now();
+        assert!(!sleep_cancellable(&ctx, 10_000));
+        assert!(start.elapsed() < Duration::from_millis(1_000));
+        stopper.join().unwrap();
     }
 }

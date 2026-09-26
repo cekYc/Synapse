@@ -11,6 +11,7 @@
 // ============================================================
 
 use crate::engine::ir::*;
+use crate::vision::pixel::parse_hex_color;
 use serde::Deserialize;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -26,6 +27,8 @@ pub enum CompileError {
     UnknownNodeKind(String),
     #[error("Node '{0}' has no outgoing edge but is not a terminal node")]
     DanglingNode(String),
+    #[error("'{node}': {message}")]
+    InvalidConfig { node: String, message: String },
 }
 
 /// Intermediate JSON structures matching the frontend schema
@@ -70,6 +73,85 @@ fn parse_input_level(config: &serde_json::Value) -> InputLevel {
         Some("virtual_hid") => InputLevel::VirtualHid,
         _ => InputLevel::Standard,
     }
+}
+
+fn invalid(node: &NodeJson, message: impl Into<String>) -> CompileError {
+    let label = node
+        .data
+        .config
+        .get("label")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&node.id);
+    CompileError::InvalidConfig {
+        node: label.to_string(),
+        message: message.into(),
+    }
+}
+
+fn int_field(config: &serde_json::Value, key: &str) -> i32 {
+    config.get(key).and_then(|v| v.as_i64()).unwrap_or(0) as i32
+}
+
+/// A `#RRGGBB` color, validated at compile time
+fn color_field(node: &NodeJson, key: &str) -> Result<String, CompileError> {
+    let raw = node.data.config.get(key).and_then(|v| v.as_str()).unwrap_or("");
+    parse_hex_color(raw).map_err(|_| invalid(node, format!("Geçersiz renk '{raw}' ({key}), #RRGGBB biçiminde olmalı")))?;
+    Ok(raw.trim().to_string())
+}
+
+/// Manhattan RGB distance tolerance (0–765)
+fn tolerance_field(config: &serde_json::Value) -> u32 {
+    config.get("tolerance").and_then(|v| v.as_u64()).unwrap_or(10).min(765) as u32
+}
+
+fn poll_interval_field(config: &serde_json::Value, default_ms: u64) -> u64 {
+    config
+        .get("pollIntervalMs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(default_ms)
+        .max(10)
+}
+
+/// Search region from the editor's flat `regionX/Y/W/H` fields (or a nested
+/// `region: {x, y, w, h}` object). A zero width or height means "whole screen".
+fn region_field(config: &serde_json::Value) -> Option<Region> {
+    let nested = config.get("region");
+    let field = |flat: &str, key: &str| {
+        config
+            .get(flat)
+            .or_else(|| nested.and_then(|r| r.get(key)))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+    };
+    let (w, h) = (field("regionW", "w"), field("regionH", "h"));
+    (w > 0 && h > 0).then(|| Region {
+        x: field("regionX", "x") as i32,
+        y: field("regionY", "y") as i32,
+        w: w as u32,
+        h: h as u32,
+    })
+}
+
+fn image_check(node: &NodeJson) -> Result<VisionCheck, CompileError> {
+    let c = &node.data.config;
+    let template_path = c
+        .get("templatePath")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if template_path.is_empty() {
+        return Err(invalid(node, "Şablon görseli seçilmedi (templatePath)"));
+    }
+    let confidence = c.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.9);
+    if !(confidence > 0.0 && confidence <= 1.0) {
+        return Err(invalid(node, format!("Güven değeri 0 ile 1 arasında olmalı (şu an {confidence})")));
+    }
+    Ok(VisionCheck::Image {
+        template_path,
+        confidence,
+        region: region_field(c),
+    })
 }
 
 /// Compile a flow JSON string into a CompiledFlow IR
@@ -198,42 +280,45 @@ impl FlowCompiler {
                         // Terminal node → go to halt
                         instructions[idx].next = Some(halt_idx);
                     } else {
-                        // Primary output (handle "output-0" or first edge)
-                        let primary = children
-                            .iter()
-                            .find(|(_, h)| h.as_deref() == Some("output-0") || h.is_none())
-                            .or(children.first());
-
-                        if let Some((target_id, _)) = primary {
-                            instructions[idx].next = node_to_index.get(target_id).copied();
-                        } else {
-                            instructions[idx].next = Some(halt_idx);
-                        }
-
-                        // For condition/branch nodes, patch else_target
                         let is_branch = matches!(
                             node.data.category.as_str(),
                             "condition" | "loop"
                         );
-                        if is_branch {
-                            // Secondary output (handle "output-1") → else/exit branch
-                            let secondary = children
-                                .iter()
-                                .find(|(_, h)| h.as_deref() == Some("output-1"));
 
-                            if let Some((else_id, _)) = secondary {
-                                let else_idx = node_to_index.get(else_id).copied();
-                                match &mut instructions[idx].opcode {
-                                    Opcode::Branch { else_target, .. } => {
-                                        *else_target = else_idx;
-                                    }
-                                    Opcode::LoopStart { exit_target, .. } => {
-                                        if let Some(ei) = else_idx {
-                                            *exit_target = ei;
-                                        }
-                                    }
-                                    _ => {}
+                        // Primary output (handle "output-0" or an edge without
+                        // a handle). Single-output nodes may use any edge, but a
+                        // branch whose true/body output is unconnected ends the
+                        // flow there instead of borrowing its else edge.
+                        let primary = children
+                            .iter()
+                            .find(|(_, h)| h.as_deref() == Some("output-0") || h.is_none())
+                            .or(if is_branch { None } else { children.first() });
+
+                        instructions[idx].next = match primary {
+                            Some((target_id, _)) => node_to_index.get(target_id).copied(),
+                            None => Some(halt_idx),
+                        };
+
+                        if is_branch {
+                            // Secondary output (handle "output-1") → else/exit
+                            // branch. Without one the flow ends when the
+                            // condition fails, rather than falling through to
+                            // the true branch.
+                            let else_idx = children
+                                .iter()
+                                .find(|(_, h)| h.as_deref() == Some("output-1"))
+                                .and_then(|(else_id, _)| node_to_index.get(else_id).copied())
+                                .unwrap_or(halt_idx);
+
+                            match &mut instructions[idx].opcode {
+                                Opcode::Branch { else_target, .. }
+                                | Opcode::VisionBranch { else_target, .. } => {
+                                    *else_target = Some(else_idx);
                                 }
+                                Opcode::LoopStart { exit_target, .. } => {
+                                    *exit_target = else_idx;
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -284,9 +369,32 @@ impl FlowCompiler {
         let kind = node.data.node_kind.as_str();
 
         match kind {
-            // ─── Triggers (treated as Nop at execution — they just start the flow)
-            "hotkey_trigger" | "pixel_color_trigger" | "image_match_trigger"
-            | "timer_trigger" => Ok(Opcode::Nop),
+            // ─── Triggers
+            // Hotkey/timer triggers just start the flow (Nop at execution)
+            "hotkey_trigger" | "timer_trigger" => Ok(Opcode::Nop),
+
+            // Screen triggers wait until their condition holds
+            "pixel_color_trigger" => {
+                let color = color_field(node, "color")?;
+                let tolerance = tolerance_field(c);
+                let check = match region_field(c) {
+                    Some(region) => VisionCheck::ColorInRegion { region, color, tolerance },
+                    None => VisionCheck::Pixel {
+                        x: int_field(c, "x"),
+                        y: int_field(c, "y"),
+                        color,
+                        tolerance,
+                    },
+                };
+                Ok(Opcode::WaitForVision {
+                    check,
+                    poll_interval_ms: poll_interval_field(c, 100),
+                })
+            }
+            "image_match_trigger" => Ok(Opcode::WaitForVision {
+                check: image_check(node)?,
+                poll_interval_ms: poll_interval_field(c, 250),
+            }),
 
             // ─── Actions
             "mouse_click" => Ok(Opcode::MouseClick {
@@ -426,7 +534,20 @@ impl FlowCompiler {
             }),
 
             // ─── Conditions
-            "if_else" | "pixel_check" | "image_exists" => {
+            "pixel_check" => Ok(Opcode::VisionBranch {
+                check: VisionCheck::Pixel {
+                    x: int_field(c, "x"),
+                    y: int_field(c, "y"),
+                    color: color_field(node, "expectedColor")?,
+                    tolerance: tolerance_field(c),
+                },
+                else_target: None, // Patched in second pass
+            }),
+            "image_exists" => Ok(Opcode::VisionBranch {
+                check: image_check(node)?,
+                else_target: None, // Patched in second pass
+            }),
+            "if_else" => {
                 let condition = Condition {
                     left: CondOperand::Literal(
                         c.get("leftOperand")
@@ -592,6 +713,198 @@ mod tests {
                 assert!(else_target.is_some(), "else_target must be wired from output-1");
             }
             _ => unreachable!(),
+        }
+    }
+
+    // ─── Vision nodes ────────────────────────────────
+
+    use serde_json::json;
+
+    fn node(id: &str, kind: &str, category: &str, config: serde_json::Value) -> serde_json::Value {
+        json!({"id": id, "type": category, "data": {"nodeKind": kind, "category": category, "config": config}})
+    }
+
+    fn edge(source: &str, target: &str, handle: Option<&str>) -> serde_json::Value {
+        json!({"source": source, "target": target, "sourceHandle": handle})
+    }
+
+    fn compile_graph(nodes: Vec<serde_json::Value>, edges: Vec<serde_json::Value>) -> Result<CompiledFlow, CompileError> {
+        compile(&json!({"id": "f", "name": "Vision", "nodes": nodes, "edges": edges}).to_string())
+    }
+
+    fn by_node<'a>(flow: &'a CompiledFlow, id: &str) -> (usize, &'a Instruction) {
+        flow.instructions
+            .iter()
+            .enumerate()
+            .find(|(_, i)| i.node_id == id)
+            .unwrap_or_else(|| panic!("node {id} not compiled"))
+    }
+
+    fn halt_index(flow: &CompiledFlow) -> usize {
+        by_node(flow, "__halt__").0
+    }
+
+    fn delay(id: &str) -> serde_json::Value {
+        node(id, "delay", "action", json!({"label": id}))
+    }
+
+    #[test]
+    fn pixel_check_compiles_to_vision_branch() {
+        let flow = compile_graph(
+            vec![
+                node("c", "pixel_check", "condition", json!({"label": "Px", "x": -20, "y": 40, "expectedColor": "#00FF00", "tolerance": 12})),
+                delay("yes"),
+                delay("no"),
+            ],
+            vec![edge("c", "yes", Some("output-0")), edge("c", "no", Some("output-1"))],
+        )
+        .unwrap();
+
+        let (_, branch) = by_node(&flow, "c");
+        let (yes, _) = by_node(&flow, "yes");
+        let (no, _) = by_node(&flow, "no");
+        assert_eq!(branch.next, Some(yes));
+        match &branch.opcode {
+            Opcode::VisionBranch { check, else_target } => {
+                assert_eq!(
+                    *check,
+                    VisionCheck::Pixel { x: -20, y: 40, color: "#00FF00".into(), tolerance: 12 }
+                );
+                assert_eq!(*else_target, Some(no));
+            }
+            other => panic!("expected VisionBranch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unconnected_condition_outputs_end_the_flow() {
+        // Only the "false" output is connected: the true case must not
+        // borrow that edge, it ends the flow.
+        let flow = compile_graph(
+            vec![node("c", "if_else", "condition", json!({"label": "If"})), delay("no")],
+            vec![edge("c", "no", Some("output-1"))],
+        )
+        .unwrap();
+        let (_, branch) = by_node(&flow, "c");
+        let (no, _) = by_node(&flow, "no");
+        assert_eq!(branch.next, Some(halt_index(&flow)));
+        assert!(matches!(branch.opcode, Opcode::Branch { else_target: Some(t), .. } if t == no));
+
+        // Only the "true" output is connected: a failed check ends the flow
+        // instead of falling through to the true branch.
+        let flow = compile_graph(
+            vec![
+                node("c", "image_exists", "condition", json!({"label": "Img", "templatePath": "a.bmp"})),
+                delay("yes"),
+            ],
+            vec![edge("c", "yes", Some("output-0"))],
+        )
+        .unwrap();
+        let (_, branch) = by_node(&flow, "c");
+        let (yes, _) = by_node(&flow, "yes");
+        let halt = halt_index(&flow);
+        assert_eq!(branch.next, Some(yes));
+        assert!(matches!(branch.opcode, Opcode::VisionBranch { else_target: Some(t), .. } if t == halt));
+    }
+
+    #[test]
+    fn loop_without_exit_edge_ends_the_flow() {
+        let flow = compile_graph(
+            vec![node("l", "loop", "loop", json!({"label": "Loop", "count": 3})), delay("body")],
+            vec![edge("l", "body", Some("output-0"))],
+        )
+        .unwrap();
+        let (_, lp) = by_node(&flow, "l");
+        let halt = halt_index(&flow);
+        assert!(matches!(lp.opcode, Opcode::LoopStart { exit_target, .. } if exit_target == halt));
+    }
+
+    #[test]
+    fn pixel_trigger_waits_for_pixel_or_region() {
+        let flow = compile_graph(
+            vec![node("t", "pixel_color_trigger", "trigger", json!({"label": "T", "x": 5, "y": 6, "color": "#ff0000", "tolerance": 3}))],
+            vec![],
+        )
+        .unwrap();
+        let (entry, trigger) = by_node(&flow, "t");
+        assert_eq!(flow.entry_point, entry);
+        match &trigger.opcode {
+            Opcode::WaitForVision { check, poll_interval_ms } => {
+                assert_eq!(*poll_interval_ms, 100);
+                assert_eq!(
+                    *check,
+                    VisionCheck::Pixel { x: 5, y: 6, color: "#ff0000".into(), tolerance: 3 }
+                );
+            }
+            other => panic!("expected WaitForVision, got {other:?}"),
+        }
+
+        let flow = compile_graph(
+            vec![node("t", "pixel_color_trigger", "trigger", json!({
+                "label": "T", "color": "#ff0000", "regionX": -100, "regionY": 0,
+                "regionW": 50, "regionH": 20, "pollIntervalMs": 40
+            }))],
+            vec![],
+        )
+        .unwrap();
+        match &by_node(&flow, "t").1.opcode {
+            Opcode::WaitForVision { check, poll_interval_ms } => {
+                assert_eq!(*poll_interval_ms, 40);
+                assert_eq!(
+                    *check,
+                    VisionCheck::ColorInRegion {
+                        region: Region { x: -100, y: 0, w: 50, h: 20 },
+                        color: "#ff0000".into(),
+                        tolerance: 10,
+                    }
+                );
+            }
+            other => panic!("expected WaitForVision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_trigger_reads_region_and_defaults() {
+        // Nested `region` objects are accepted too; zero size means full screen
+        for (config, region) in [
+            (json!({"label": "I", "templatePath": " btn.bmp ", "confidence": 0.8}), None),
+            (
+                json!({"label": "I", "templatePath": "btn.bmp", "confidence": 0.8, "region": {"x": 1, "y": 2, "w": 30, "h": 40}}),
+                Some(Region { x: 1, y: 2, w: 30, h: 40 }),
+            ),
+            (
+                json!({"label": "I", "templatePath": "btn.bmp", "confidence": 0.8, "regionW": 0, "regionH": 90}),
+                None,
+            ),
+        ] {
+            let flow = compile_graph(vec![node("t", "image_match_trigger", "trigger", config)], vec![]).unwrap();
+            match &by_node(&flow, "t").1.opcode {
+                Opcode::WaitForVision { check, poll_interval_ms } => {
+                    assert_eq!(*poll_interval_ms, 250);
+                    assert_eq!(
+                        *check,
+                        VisionCheck::Image { template_path: "btn.bmp".into(), confidence: 0.8, region }
+                    );
+                }
+                other => panic!("expected WaitForVision, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_vision_config_is_a_compile_error() {
+        let cases = [
+            node("n", "image_exists", "condition", json!({"label": "Görsel", "templatePath": ""})),
+            node("n", "image_exists", "condition", json!({"label": "Görsel", "templatePath": "a.bmp", "confidence": 1.5})),
+            node("n", "image_match_trigger", "trigger", json!({"label": "Görsel", "templatePath": "a.bmp", "confidence": 0})),
+            node("n", "pixel_check", "condition", json!({"label": "Görsel", "expectedColor": "green"})),
+            node("n", "pixel_color_trigger", "trigger", json!({"label": "Görsel", "color": "#12"})),
+        ];
+        for case in cases {
+            match compile_graph(vec![case.clone()], vec![]) {
+                Err(CompileError::InvalidConfig { node, .. }) => assert_eq!(node, "Görsel"),
+                other => panic!("expected InvalidConfig for {case}, got {other:?}"),
+            }
         }
     }
 }

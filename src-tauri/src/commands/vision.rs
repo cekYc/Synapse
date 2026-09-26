@@ -34,7 +34,7 @@ pub async fn find_pixel(
     color: String,
     tolerance: u32,
     region: Option<(i32, i32, u32, u32)>,
-) -> Result<Option<(u32, u32)>, String> {
+) -> Result<Option<(i32, i32)>, String> {
     blocking(move || pixel::find_pixel_color(region, &color, tolerance)).await
 }
 
@@ -43,7 +43,7 @@ pub async fn find_image(
     template_path: String,
     confidence: f64,
     region: Option<(i32, i32, u32, u32)>,
-) -> Result<Option<(u32, u32, f64)>, String> {
+) -> Result<Option<(i32, i32, f64)>, String> {
     blocking(move || {
         Ok(template::find_template(&template_path, confidence, region)?
             .map(|m| (m.center_x, m.center_y, m.confidence)))

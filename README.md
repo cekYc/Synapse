@@ -203,6 +203,16 @@ cargo test --release --lib -- --ignored --nocapture bench   # Performans ölçü
 | 🟢 **Akış** | Döngü | Sayaçlı tekrar |
 | | Koşullu Döngü | While döngüsü |
 
+### Görsel Düğümler
+
+- **Piksel Rengi** ve **Görsel Eşleme** tetikleyicileri, koşul sağlanana kadar ekranı `pollIntervalMs` aralıklarla yoklar (varsayılan 100 / 250 ms). Beklerken Duraklat ve Durdur çalışır.
+- **Piksel Kontrolü** ve **Görsel Var mı?** sonuca göre dallanır: alt çıkış = bulundu, sağ çıkış = bulunamadı.
+- Koşul ve döngü düğümlerinde **bağlanmamış bir çıkış akışı bitirir**. Örneğin yalnızca alt çıkışı bağlı bir "Görsel Var mı?" düğümü, görsel yoksa akışı sonlandırır.
+- **Bölge** (`regionX`, `regionY`, `regionW`, `regionH`): genişlik veya yükseklik 0 ise tüm ekran aranır; Piksel Rengi tetikleyicisinde bu durumda yalnızca (`x`, `y`) pikseli kontrol edilir. Negatif koordinatlar (birincil monitörün solundaki/üstündeki ekranlar) desteklenir.
+- **tolerance**: RGB kanal farklarının toplamı (0–765). **confidence**: 0–1 arası eşleşme eşiği. Şablonlar 24/32-bit BMP olmalıdır.
+- Eşleşme konumu `match_x`, `match_y` (görsellerde eşleşmenin merkezi) ve `match_confidence` değişkenlerine yazılır.
+- Geçersiz renk, boş şablon yolu veya aralık dışı güven değeri akış çalıştırılmadan önce hata olarak bildirilir.
+
 ## 🗺️ Yol Haritası
 
 - [x] **Faz 1**: Temel İskelet — Tauri 2, React Flow, tasarım sistemi
