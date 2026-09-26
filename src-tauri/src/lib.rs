@@ -5,6 +5,7 @@
 mod commands;
 mod engine;
 mod input;
+mod sharing;
 mod storage;
 mod vision;
 
@@ -28,6 +29,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(execution_manager)
         .invoke_handler(tauri::generate_handler![
             // Flow CRUD
@@ -48,6 +50,11 @@ pub fn run() {
             commands::vision::find_pixel,
             commands::vision::find_image,
             commands::vision::get_vision_backends,
+            // Sharing
+            commands::sharing::export_flow_package,
+            commands::sharing::create_share_code,
+            commands::sharing::preview_flow_package,
+            commands::sharing::import_flow_package,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Synapse");

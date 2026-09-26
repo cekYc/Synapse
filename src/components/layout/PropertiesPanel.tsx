@@ -1,4 +1,5 @@
-import { X, MousePointer } from 'lucide-react';
+import { X, MousePointer, FolderOpen } from 'lucide-react';
+import { open } from '@tauri-apps/plugin-dialog';
 import { useFlowStore, type SynapseNode } from '../../stores/flowStore';
 import { getNodeEntry } from '../../utils/nodeRegistry';
 
@@ -32,6 +33,15 @@ export function PropertiesPanel() {
 
   const handleChange = (key: string, value: string | number | boolean) => {
     updateNodeConfig(selectedNode.id, { [key]: value } as any);
+  };
+
+  const browseTemplate = async (key: string) => {
+    const path = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'BMP görseli', extensions: ['bmp'] }],
+    });
+    if (typeof path === 'string') handleChange(key, path);
   };
 
   return (
@@ -95,6 +105,22 @@ export function PropertiesPanel() {
                     value={value}
                     onChange={(e) => handleChange(key, Number(e.target.value))}
                   />
+                ) : key === 'templatePath' ? (
+                  <div className="properties-panel__file">
+                    <input
+                      className="properties-panel__input"
+                      value={String(value || '')}
+                      onChange={(e) => handleChange(key, e.target.value)}
+                      placeholder="C:\...\sablon.bmp"
+                    />
+                    <button
+                      className="btn btn-icon btn-ghost"
+                      onClick={() => browseTemplate(key)}
+                      title="BMP görseli seç"
+                    >
+                      <FolderOpen size={14} />
+                    </button>
+                  </div>
                 ) : Array.isArray(value) ? (
                   <input
                     className="properties-panel__input"

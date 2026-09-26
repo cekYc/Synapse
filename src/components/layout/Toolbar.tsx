@@ -1,10 +1,13 @@
+import { useState } from 'react';
 import {
   Play, Pause, Square, Save, FolderOpen, FilePlus,
-  Undo, Redo, Settings, Zap,
+  Undo, Redo, Settings, Zap, Share2, FileUp,
 } from 'lucide-react';
 import { useFlowStore } from '../../stores/flowStore';
 import { useExecutionStore } from '../../stores/executionStore';
 import { invoke } from '@tauri-apps/api/core';
+import { ShareDialog } from '../sharing/ShareDialog';
+import { ImportDialog } from '../sharing/ImportDialog';
 
 export function Toolbar() {
   const flowName = useFlowStore((s) => s.flowName);
@@ -12,6 +15,7 @@ export function Toolbar() {
   const newFlow = useFlowStore((s) => s.newFlow);
   const toJSON = useFlowStore((s) => s.toJSON);
   const status = useExecutionStore((s) => s.status);
+  const [dialog, setDialog] = useState<'share' | 'import' | null>(null);
 
   const handleSave = async () => {
     try {
@@ -61,6 +65,11 @@ export function Toolbar() {
       </div>
       <div className="toolbar__divider" />
       <div className="toolbar__group">
+        <button className="btn btn-icon btn-ghost tooltip" onClick={() => setDialog('import')} data-tooltip="İçe Aktar" id="btn-import-flow"><FileUp size={16} /></button>
+        <button className="btn btn-icon btn-ghost tooltip" onClick={() => setDialog('share')} data-tooltip="Paylaş" id="btn-share-flow"><Share2 size={16} /></button>
+      </div>
+      <div className="toolbar__divider" />
+      <div className="toolbar__group">
         <button className="btn btn-icon btn-ghost tooltip" data-tooltip="Geri Al" id="btn-undo"><Undo size={16} /></button>
         <button className="btn btn-icon btn-ghost tooltip" data-tooltip="Yinele" id="btn-redo"><Redo size={16} /></button>
       </div>
@@ -80,6 +89,8 @@ export function Toolbar() {
       </div>
       <div className="toolbar__spacer" />
       <button className="btn btn-icon btn-ghost tooltip" data-tooltip="Ayarlar" id="btn-settings"><Settings size={16} /></button>
+      {dialog === 'share' && <ShareDialog onClose={() => setDialog(null)} />}
+      {dialog === 'import' && <ImportDialog onClose={() => setDialog(null)} />}
     </header>
   );
 }

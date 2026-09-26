@@ -18,14 +18,19 @@ pub struct FlowSummary {
 
 /// Get the flows storage directory, creating it if needed.
 pub fn flows_dir() -> Result<PathBuf, String> {
-    let mut dir = dirs_next().map_err(|e| e.to_string())?;
+    let mut dir = data_dir()?;
     dir.push("flows");
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create flows dir: {e}"))?;
     Ok(dir)
 }
 
+/// Directory for template images that came with imported flows
+pub fn assets_dir() -> Result<PathBuf, String> {
+    Ok(data_dir()?.join("assets"))
+}
+
 /// Platform-specific data directory for Synapse
-fn dirs_next() -> Result<PathBuf, String> {
+fn data_dir() -> Result<PathBuf, String> {
     // Use %APPDATA%/Synapse on Windows
     let base = std::env::var("APPDATA")
         .map(PathBuf::from)

@@ -42,6 +42,7 @@ export default function App() {
   const addNode = useFlowStore((s) => s.addNode);
   const selectNode = useFlowStore((s) => s.selectNode);
   const setViewport = useFlowStore((s) => s.setViewport);
+  const flowId = useFlowStore((s) => s.flowId);
 
   const activeNodeId = useExecutionStore((s) => s.activeNodeId);
   const startListening = useExecutionStore((s) => s.startListening);
@@ -52,6 +53,14 @@ export default function App() {
     startListening();
     return () => stopListening();
   }, [startListening, stopListening]);
+
+  // Frame the whole graph whenever a different flow is loaded (e.g. an import)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      reactFlowInstance.current?.fitView({ padding: 0.2, duration: 200 });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [flowId]);
 
   // Apply 'running' class to the active node
   const styledNodes = useMemo(() => {

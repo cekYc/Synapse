@@ -63,6 +63,12 @@ Hiç programlama bilmeyen biri bile, **sürükle-bırak** mantığıyla bilgisay
   - İki yol da aynı konumu ve güven skorunu döndürür
 - **BMP desteği**: 24-bit ve 32-bit template yükleme
 
+### 🔗 Paylaşım
+- Akışları şablon görselleriyle birlikte tek bir **`.synapse` paketi** olarak dışa aktar
+- Kopyala-yapıştır için sıkıştırılmış **paylaşım kodu** (`SYN1:…`)
+- İçe aktarmadan önce **güvenlik incelemesi**: program çalıştıran, metin yazan veya Windows kısayolu gönderen adımlar listelenir; program çalıştıran akışlar için ayrıca açık onay istenir
+- İçe aktarma akışı **çalıştırmaz**, yalnızca editörde açar; paket içeriği diske yazılmadan önce tamamen doğrulanır
+
 ### 💾 Akış Yönetimi
 - Flow'ları JSON olarak kaydet / yükle / sil
 - `%APPDATA%/Synapse/flows/` dizininde kalıcı depolama
@@ -129,7 +135,8 @@ synapse/
 ├── src/                          # Frontend (React + TypeScript)
 │   ├── components/
 │   │   ├── layout/               # Toolbar, Sidebar, StatusBar, PropertiesPanel
-│   │   └── nodes/                # NodeWrapper (custom React Flow nodes)
+│   │   ├── nodes/                # NodeWrapper (custom React Flow nodes)
+│   │   └── sharing/              # Paylaş / İçe Aktar pencereleri
 │   ├── stores/                   # Zustand state (flowStore, executionStore)
 │   ├── types/                    # TypeScript tip tanımları
 │   ├── utils/                    # nodeRegistry (16 düğüm tipi)
@@ -154,6 +161,9 @@ synapse/
 │       │   ├── ncc.rs            # Paralel CPU NCC eşleyicisi
 │       │   ├── gpu.rs            # wgpu GPU eşleyicisi
 │       │   └── ncc.wgsl          # NCC compute shader
+│       ├── sharing/              # Paylaşım paketleri
+│       │   ├── mod.rs            # .synapse formatı, paylaşım kodu, doğrulama
+│       │   └── review.rs         # İçe aktarma güvenlik incelemesi
 │       ├── commands/             # Tauri IPC komutları
 │       ├── storage/              # Dosya sistemi depolama
 │       └── lib.rs                # Modül kökü
@@ -181,6 +191,24 @@ cargo test --lib                          # GPU yoksa GPU testleri atlanır
 SYNAPSE_REQUIRE_GPU=1 cargo test --lib    # GPU testlerini zorunlu kıl
 cargo test --release --lib -- --ignored --nocapture bench   # Performans ölçümleri
 ```
+
+### Paylaşım Paketi Formatı
+
+`.synapse` dosyası okunabilir bir JSON'dur:
+
+```json
+{
+  "format": "synapse-flow",
+  "formatVersion": 1,
+  "appVersion": "0.1.0",
+  "createdAt": "2026-09-26T10:00:00Z",
+  "meta": { "name": "…", "description": "…", "author": "…", "tags": ["ofis"] },
+  "flow": { "name": "…", "nodes": [], "edges": [], "viewport": {} },
+  "assets": { "img1": "<base64 BMP>" }
+}
+```
+
+Şablon görselleri `assets` içine gömülür ve düğümlerde `asset:img1` olarak geçer. İçe aktarmada görseller `%APPDATA%/Synapse/assets/<akış-id>/` altına kaydedilir, akış yeni bir kimlik alır (mevcut akışların üzerine yazılmaz). Paylaşım kodu aynı JSON'un sıkıştırılıp base64url ile kodlanmış halidir. Paketler en fazla 64 MB, her görsel en fazla 10 MB olabilir. Bu sürümde olmayan düğüm türleri içeren paketler reddedilir.
 
 ## 🧩 Düğüm Tipleri
 
@@ -222,6 +250,8 @@ cargo test --release --lib -- --ignored --nocapture bench   # Performans ölçü
 - [x] **Faz 5**: Performans — DXGI Desktop Duplication, wgpu compute shader
 - [ ] **Faz 6**: Eklenti Sistemi — Lua/JS scripting desteği
 - [ ] **Faz 7**: Topluluk — Flow paylaşım platformu
+  - [x] Paylaşım paketi (`.synapse`), paylaşım kodu, içe aktarma güvenlik incelemesi
+  - [ ] Barındırılan akış kataloğu (gezme, yükleme, hesaplar — sunucu gerektirir)
 
 ## 🤝 Katkıda Bulunma
 
