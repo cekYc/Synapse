@@ -36,7 +36,7 @@ parking_lot = "0.12"
 # pins that edge to 0.62.2. If the Windows build fails inside wgpu-hal/dx12
 # after a `cargo update`, set gpu-allocator's `windows` entry in Cargo.lock back
 # to "windows 0.62.2".
-wgpu ={ version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "vulkan", "metal"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "vulkan", "metal"] }
 pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }
 rayon = "1"
